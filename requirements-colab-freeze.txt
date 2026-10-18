@@ -425,7 +425,7 @@ pygame==2.6.1
 pygit2==1.18.0
 pygments==2.19.1
 PyGObject==3.42.0
-PyJWT==2.10.1
+PyJWT==2.15.0
 pylibcudf-cu12==25.2.1
 pylibcugraph-cu12==25.2.0
 pylibraft-cu12==25.2.0
