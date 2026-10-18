@@ -323,7 +323,7 @@ ndindex==1.9.2
 nest-asyncio==1.6.0
 networkx==3.4.2
 nibabel==5.3.2
-nltk==3.9.1
+nltk==3.10.3
 notebook==6.5.7
 notebook-shim==0.2.4
 numba==0.60.0
