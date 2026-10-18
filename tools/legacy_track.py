@@ -210,7 +210,25 @@ def _load_generator(repro_dir):
     return ns["generate_synthetic_data"], ns["get_right_form"]
 
 
+_SHARED_NAMES = ("constants", "expression_tree", "sr_models", "ga_weight_optimizer",
+                 "llm_models", "run_main_claim", "run_prompt_sensitivity")
+
+
 def c1_check(repro_dir, srs=("deap", "gplearn", "pysr")):
+    """Executa o check C1 isolando os módulos legados, que têm os mesmos nomes dos módulos
+    novos de src/ (constants, sr_models, ...). Restaura o estado de sys.modules ao final."""
+    saved = {n: sys.modules.pop(n) for n in _SHARED_NAMES if n in sys.modules}
+    try:
+        return _c1_check(repro_dir, srs)
+    finally:
+        for n in _SHARED_NAMES:
+            sys.modules.pop(n, None)
+        sys.modules.update(saved)
+        if repro_dir in sys.path:
+            sys.path.remove(repro_dir)
+
+
+def _c1_check(repro_dir, srs):
     """C1: com a mesma semente, mudar os pesos (w1,w2,w3) ou o prompt (A x D) muda a equação
     do SR no código original? Usa um LLM falso cujo score depende 100% do prompt."""
     import random
