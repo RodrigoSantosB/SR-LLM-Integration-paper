@@ -123,7 +123,7 @@ folium==0.19.5
 fonttools==4.57.0
 frozendict==2.4.6
 frozenlist==1.6.0
-fsspec==2025.3.2
+fsspec==2026.6.0
 future==1.0.0
 gast==0.6.0
 gcsfs==2025.3.2
