@@ -1,5 +1,7 @@
 # SR-LLM-Integration — implementação fiel ao artigo (branch `paper-faithful`)
 
+> Derivado de [bilgesi/SR-LLM-Integration](https://github.com/bilgesi/SR-LLM-Integration) (Apache-2.0), commit `1508a37`. Branch `main`: código original dos autores; branch `paper-faithful`: esta reimplementação.
+
 Taskin, Xie & Lazebnik, *Knowledge integration for physics-informed symbolic regression using pre-trained large language models*, Scientific Reports 16:1614 (2026).
 
 Este branch reimplementa o pipeline conforme o **texto do artigo**:
