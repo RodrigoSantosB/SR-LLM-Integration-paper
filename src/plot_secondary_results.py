@@ -15,6 +15,10 @@ TABLE5_LLMS = ["baseline", "llama", "falcon", "mistral"]
 LLM_ORDER = ["llama", "falcon", "mistral"]
 SC_ORDER = ["ball_drop", "shm", "wave"]
 METRICS = ["MAE", "MSE", "one_minus_R2", "distance"]
+# [AJUSTE pós-piloto] colunas complementares (sem valor publicado): distância sobre o texto literal
+# e coincidência de estrutura com a verdade-base (constantes livres). "distance" é a distância do
+# artigo calculada sobre as formas canônicas.
+EXTRA = ["distance_literal", "structure_match"]
 
 # ---------------------------------------------------------------- valores do artigo
 # Tabela 2: prompt -> llm -> sr -> (MAE, MSE, 1-R2, distância)
@@ -140,6 +144,9 @@ def paper_noise(biased):
 def load(results_csv):
     df = pd.read_csv(results_csv)
     df["noise_level"] = df["noise_level"].round(4)
+    for c in EXTRA:  # resultados gravados antes dos ajustes não têm estas colunas
+        if c not in df.columns:
+            df[c] = np.nan
     return df
 
 
@@ -161,7 +168,7 @@ def table5(df, cfg):
     d = _default_noise(df)
     d = d[((d.llm == "none") & (d.prompt == "-")) |
           (d.llm.isin(cfg["llms"]) & (d.prompt == cfg["bench_prompt"]))]
-    t = d.groupby(["scenario", "sr", "llm"]).apply(_mean_sd, METRICS, include_groups=False)
+    t = d.groupby(["scenario", "sr", "llm"]).apply(_mean_sd, METRICS + EXTRA, include_groups=False)
     return t.round(4)
 
 
@@ -169,32 +176,39 @@ def table2(df, cfg):
     """Prompts A–H: média sobre cenários e repetições, por prompt x LLM x SR, ao lado do artigo."""
     d = _default_noise(df)
     d = d[d.llm.isin(cfg["llms"]) & d.prompt.isin(list("ABCDEFGH"))]
-    ours = d.groupby(["prompt", "llm", "sr"])[METRICS].mean()
+    ours = d.groupby(["prompt", "llm", "sr"])[METRICS + EXTRA].mean()
     paper = paper_table2().add_suffix("_artigo")
     t = ours.join(paper, how="left")
-    cols = [c for m in METRICS for c in (m, m + "_artigo")]
+    cols = [c for m in METRICS for c in (m, m + "_artigo")] + EXTRA
     return t[cols].round(4)
 
 
-def table_noise(df, cfg, biased, llm=None):
-    """Tabela 3 (biased=False) ou 4 (biased=True): distância média por cenário x SR x ruído."""
+def table_noise(df, cfg, biased, llm=None, value="distance"):
+    """Tabela 3 (biased=False) ou 4 (biased=True): distância média por cenário x SR x ruído
+    (``value`` permite gerar a mesma tabela para outra métrica, ex. structure_match)."""
     llm = llm or cfg["noise_llm"]
     d = df[(df.biased == int(biased)) & (df.llm == llm)]
     if llm != "none":
         d = d[d.prompt == cfg["noise_prompt"]]
     t = d.pivot_table(index=["scenario", "sr"], columns=["noise_mode", "noise_level"],
-                      values="distance", aggfunc="mean")
+                      values=value, aggfunc="mean")
     cols = [c for c in NOISE_COLS if c in t.columns]
     return t.reindex(columns=cols).round(3)
 
 
 def llm_overhead(df):
     """Razão tempo LLM / tempo SR (o artigo afirma < 0.4) e taxa de falha de parse."""
-    d = df[df.llm != "none"]
+    d = df[df.llm != "none"].copy()
+    if "llm_fail_rate_new" not in d.columns:
+        d["llm_fail_rate_new"] = d["llm_fail_rate"]
+    # a razão de tempo só é informativa nas execuções com chamadas novas (as demais vêm do cache)
+    d["llm_ratio_new"] = d["llm_ratio"].where(d["llm_calls"] > 0)
     return d.groupby(["sr", "llm"]).agg(
-        razao_LLM_SR_mediana=("llm_ratio", "median"),
+        razao_LLM_SR_mediana=("llm_ratio_new", "median"),
         chamadas_LLM_media=("llm_calls", "mean"),
+        respostas_cache_media=("llm_cached", "mean"),
         falha_parse_media=("llm_fail_rate", "mean"),
+        falha_parse_novas_media=("llm_fail_rate_new", "mean"),
         execucoes=("key", "count"),
     ).round(3)
 
@@ -218,20 +232,24 @@ def table5_vs_paper(df, cfg):
     """Tabela 5 no formato do artigo: cenário × LLM (baseline + 3) × SR, nosso × artigo."""
     t = table5(df, cfg).reset_index()
     t["llm"] = t["llm"].replace({"none": "baseline"})
-    ours = t.set_index(["scenario", "llm", "sr"])[METRICS]
+    ours = t.set_index(["scenario", "llm", "sr"])[METRICS + EXTRA]
     out = ours.join(paper_table5().add_suffix("_artigo"), how="outer")
-    cols = [c for m in METRICS for c in (m, m + "_artigo")]
+    cols = [c for m in METRICS for c in (m, m + "_artigo")] + EXTRA
     return out[cols].round(4)
 
 
 def table6(df):
-    """Tabela 6 no formato do artigo: tempos de SR e de LLM (médias por execução)."""
-    d = df[df.llm != "none"].copy()
+    """Tabela 6 no formato do artigo: tempos de SR e de LLM (médias por execução).
+
+    [AJUSTE pós-piloto] Só entram as execuções com chamadas novas ao LLM: execuções atendidas
+    inteiramente pelo cache têm tempo de LLM ≈ 0 e reduziam artificialmente as médias."""
+    d = df[(df.llm != "none") & (df.llm_calls > 0)].copy()
     g = d.groupby(["scenario", "sr", "llm"])
     out = pd.DataFrame({
         "total_sr_s": g["sr_seconds"].mean(),
         "total_llm_s": g["llm_seconds"].mean(),
         "llm_sr_ratio": g["llm_ratio"].mean(),
+        "execucoes": g["key"].count(),
         "sr_per_call_s": (g["sr_seconds"].sum() / g["n_evaluated"].sum().clip(lower=1)),
         "llm_per_call_s": (g["llm_seconds"].sum() / g["llm_calls"].sum().clip(lower=1)),
         "sr_per_iter_s": (g["sr_seconds"].sum() / g["n_generations"].sum().clip(lower=1)),
@@ -250,6 +268,8 @@ def save_all(df, cfg, out_dir):
         "tabela4_ruido_enviesado.csv": table_noise(df, cfg, True),
         "tabela3_baseline_sem_llm.csv": table_noise(df, cfg, False, "none"),
         "tabela4_baseline_sem_llm.csv": table_noise(df, cfg, True, "none"),
+        "tabela3_estrutura.csv": table_noise(df, cfg, False, value="structure_match"),
+        "tabela4_estrutura.csv": table_noise(df, cfg, True, value="structure_match"),
         "overhead_llm.csv": llm_overhead(df),
     }
     for name, t in tabs.items():
@@ -318,8 +338,9 @@ def main(argv=None):
     p.add_argument("results_csv")
     p.add_argument("out_dir", nargs="?", default="tabelas")
     p.add_argument("--mode", default="full", choices=list(runner.MODES))
+    p.add_argument("--profile", default="literal", choices=["literal", "adjusted"])
     a = p.parse_args(argv)
-    cfg = runner.make_config(a.mode)
+    cfg = runner.make_config(a.mode, a.profile)
     df = load(a.results_csv)
     cfg["srs"] = [s for s in SR_ORDER if s in set(df.sr)]
     cfg["llms"] = [l for l in LLM_ORDER if l in set(df.llm)]

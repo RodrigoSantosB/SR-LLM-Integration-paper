@@ -12,6 +12,10 @@ Blocos (seção "Experiment types", p.6–7):
   benchmark — 3 cenários × 3 SR × (linha de base + 3 LLMs) × n  (Tabelas 5 e 6)
   prompts   — 8 prompts × 3 LLMs × 3 SR × 3 cenários × n          (Tabela 2)
   ruído     — cenários × SR × {entradas, alvo, ambos} × 1–5% × n   (Tabelas 3 e 4)
+
+Perfis (constants.PROFILES): "literal" (especificação do artigo) e "adjusted" (variantes
+documentadas para as inconsistências da execução piloto). O perfil não entra na chave da
+execução; cada perfil grava numa pasta própria (cli.config_from).
 """
 import csv
 import os
@@ -30,9 +34,10 @@ from loss import Objective
 
 COLUMNS = [
     "key", "scenario", "sr", "llm", "prompt", "noise_mode", "noise_level", "biased", "rep",
-    "MAE", "MSE", "one_minus_R2", "R2", "distance", "size", "plaus", "loss", "equation",
-    "raw_equation", "n_generations", "n_evaluated", "sr_seconds", "llm_seconds", "llm_ratio",
-    "llm_calls", "llm_cached", "llm_fail_rate", "timestamp",
+    "MAE", "MSE", "one_minus_R2", "R2", "distance", "distance_literal", "structure_match",
+    "size", "plaus", "loss", "equation", "raw_equation", "n_generations", "n_evaluated",
+    "sr_seconds", "llm_seconds", "llm_ratio", "llm_calls", "llm_cached", "llm_fail_rate",
+    "llm_fail_rate_new", "profile", "timestamp",
 ]
 
 MODES = {
@@ -42,15 +47,21 @@ MODES = {
                   fake_llm=True),
     # piloto com LLM real para medir custo
     "pilot": dict(n_reps=3, llms=["mistral"], srs=["deap"], scenarios=["ball_drop"]),
+    # [AJUSTE pós-piloto] verificação curta das correções com LLMs reais, antes do protocolo
+    # completo: 1 cenário × 3 SR × Mistral e LLaMA, prompts A e D, n = 1
+    "verify": dict(n_reps=1, llms=["mistral", "llama"], scenarios=["ball_drop"],
+                   prompts=["A", "D"], noise_levels=[0.01, 0.05]),
     # protocolo completo do artigo
     "full": dict(),
 }
 
 
-def make_config(mode="full", **overrides):
-    """Configuração do protocolo do artigo, reduzida conforme o modo."""
+def make_config(mode="full", profile="literal", **overrides):
+    """Configuração do protocolo do artigo, reduzida conforme o modo, com o perfil indicado."""
+    if profile not in C.PROFILES:
+        raise ValueError(f"perfil desconhecido: {profile} (use {list(C.PROFILES)})")
     cfg = dict(
-        mode=mode,
+        mode=mode, profile=profile, wave_stop=C.WAVE_STOP,
         n_experiments=C.N_EXPERIMENTS, steps=C.STEPS_PER_EXPERIMENT,
         pop=C.POPULATION_SIZE, gens=C.GENERATIONS, n_reps=C.N_REPETITIONS,
         scenarios=list(C.SCENARIOS), srs=list(C.SR_NAMES), llms=list(C.LLM_NAMES),
@@ -64,6 +75,7 @@ def make_config(mode="full", **overrides):
     )
     if mode not in MODES:
         raise ValueError(f"modo desconhecido: {mode} (use {list(MODES)})")
+    cfg.update(C.PROFILES[profile])
     cfg.update(MODES[mode])
     cfg.update({k: v for k, v in overrides.items() if v is not None})
     return cfg
@@ -92,7 +104,8 @@ def seed_of(*parts):
 
 def make_data(spec, cfg):
     X, y, meta = generate_clean(spec.scenario, cfg["n_experiments"], cfg["steps"],
-                                seed=seed_of("data", spec.scenario, spec.rep))
+                                seed=seed_of("data", spec.scenario, spec.rep),
+                                wave_stop=cfg.get("wave_stop"))
     if spec.noise_level > 0:
         X, y = add_noise(X, y, spec.noise_mode, spec.noise_level, spec.biased,
                          seed=seed_of("noise", spec.scenario, spec.rep, spec.noise_mode,
@@ -104,7 +117,12 @@ def make_sr(name, cfg, seed):
     import sr_models  # importado aqui: o PySR deve ser carregado antes do torch
     cls = {"deap": sr_models.DEAPModel, "pysr": sr_models.PySRModel,
            "gplearn": sr_models.GplearnModel}[name]
-    return cls(list(C.FEATURES), pop_size=cfg["pop"], generations=cfg["gens"], seed=seed)
+    kw = dict(min_generations=cfg.get("min_generations", 0))
+    if cfg.get("extra_ops"):
+        kw["extra_unary"] = C.EXTRA_OPS[name]
+    if name == "deap" and cfg.get("deap_init_depth"):
+        kw["init_depth"] = tuple(cfg["deap_init_depth"])
+    return cls(list(C.FEATURES), pop_size=cfg["pop"], generations=cfg["gens"], seed=seed, **kw)
 
 
 def run_one(spec, cfg, scorer=None):
@@ -139,17 +157,24 @@ def run_one(spec, cfg, scorer=None):
     except (ET.ParseError, RecursionError):
         equation = ""
     row = dict(asdict(spec))
+    asked = st["n_calls"] + st["n_cached"]
     row.update(
         key=spec.key, MAE=mae, MSE=mse, one_minus_R2=omr2,
         R2=(1 - omr2) if finite else np.nan,
-        distance=ET.distance(model.best_expr, sc["gt"], model.rename),
+        # distância do artigo sobre as formas canônicas (principal) e sobre o texto literal
+        distance=ET.canonical_distance(model.best_expr, sc["gt"], model.rename),
+        distance_literal=ET.distance(model.best_expr, sc["gt"], model.rename),
+        structure_match=ET.structure_match(model.best_expr, sc["gt"], model.rename),
         size=best.get("size", np.nan), plaus=best.get("plaus", np.nan),
         loss=best.get("loss", np.nan), equation=equation, raw_equation=model.best_expr,
         n_generations=model.n_generations, n_evaluated=obj.n_evaluated,
         sr_seconds=total - st["seconds"], llm_seconds=st["seconds"],
         llm_ratio=st["seconds"] / max(total - st["seconds"], 1e-9),
         llm_calls=st["n_calls"], llm_cached=st["n_cached"],
-        llm_fail_rate=(st["n_fail"] / st["n_calls"]) if st["n_calls"] else 0.0,
+        # falhas sobre todas as consultas (novas e do cache) e só sobre as novas
+        llm_fail_rate=((st["n_fail"] + st["n_cached_fail"]) / asked) if asked else np.nan,
+        llm_fail_rate_new=(st["n_fail"] / st["n_calls"]) if st["n_calls"] else np.nan,
+        profile=cfg.get("profile", "literal"),
         timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
     )
     return row
@@ -157,9 +182,9 @@ def run_one(spec, cfg, scorer=None):
 
 def _stats(scorer):
     if scorer is None:
-        return dict(n_calls=0, n_cached=0, n_fail=0, seconds=0.0)
+        return dict(n_calls=0, n_cached=0, n_fail=0, n_cached_fail=0, seconds=0.0)
     return dict(n_calls=scorer.n_calls, n_cached=scorer.n_cached, n_fail=scorer.n_fail,
-                seconds=scorer.seconds)
+                n_cached_fail=getattr(scorer, "n_cached_fail", 0), seconds=scorer.seconds)
 
 
 class ResultStore:
@@ -170,7 +195,13 @@ class ResultStore:
         self.done = set()
         if os.path.exists(path):
             with open(path, newline="") as f:
-                self.done = {r["key"] for r in csv.DictReader(f)}
+                reader = csv.DictReader(f)
+                if reader.fieldnames and list(reader.fieldnames) != COLUMNS:
+                    raise ValueError(
+                        f"{path} foi gravado por outra versão do pipeline (colunas diferentes). "
+                        "Use outra pasta de resultados: as execuções antigas seriam puladas na "
+                        "retomada sem os ajustes atuais.")
+                self.done = {r["key"] for r in reader}
 
     def append(self, row):
         new = not os.path.exists(self.path)

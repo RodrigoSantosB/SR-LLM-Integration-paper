@@ -22,7 +22,9 @@ huggingface-cli login               # Llama-2 exige licença aceita no Hugging F
 ```bash
 python src/run.py --mode smoke      # validação em CPU com LLM falso (minutos)
 python src/run.py --mode pilot      # Mistral × DEAP × queda livre, n = 3: mede o custo
+python src/run.py --mode verify     # verificação curta das correções com LLMs reais (Mistral, LLaMA)
 python src/run.py --mode full       # protocolo completo do artigo (n = 25)
+python src/run.py --mode full --profile adjusted   # variantes pós-piloto (CONFORMIDADE, seção 8)
 ```
 Também é possível executar cada bloco separadamente:
 - `src/run_main_claim.py`: Tabelas 5 e 6;
@@ -31,10 +33,13 @@ Também é possível executar cada bloco separadamente:
 
 Opções:
 - `--n-reps`, `--scenarios`, `--srs`, `--llms`, `--prompts`, `--out`: restringem o escopo da execução;
+- `--profile {literal,adjusted}`: `literal` segue a especificação do artigo; `adjusted` aplica as variantes documentadas após a execução piloto (escala normalizada, `sqrt`/`exp`, mínimo de 10 gerações, profundidade inicial do DEAP 1–3);
 - `--loss-scaling {paper,normalized}`: escala dos termos da perda;
 - `--fake-llm`: troca o LLM por um avaliador constante, para testes.
 
-Os resultados ficam em `results_runs/<modo>/resultados_*.csv`, com uma linha por execução, e a execução pode ser retomada. As tabelas no formato do artigo, com os valores publicados ao lado, ficam em `results_runs/<modo>/tabelas/`.
+Os resultados ficam em `results_runs/<modo>_<perfil>/resultados_*.csv`, com uma linha por execução, e a execução pode ser retomada. As tabelas no formato do artigo, com os valores publicados ao lado, ficam em `results_runs/<modo>_<perfil>/tabelas/`. Resultados gravados por versões anteriores (outras colunas) não são retomados: use uma pasta nova.
+
+A coluna `distance` é a distância do artigo calculada sobre as formas canônicas das expressões; `distance_literal` é a mesma distância sobre o texto produzido pelo SR, e `structure_match` indica se a estrutura coincide com a da verdade-base (constantes livres). Ajustes feitos após a execução piloto: `docs/CONFORMIDADE.md`, seções 7 e 8.
 
 ## Estrutura de `src/`
 | Arquivo | Conteúdo |
@@ -54,7 +59,7 @@ pytest            # inclui testes lentos do PySR (marcador "slow")
 ```
 
 ## Desvios
-Os desvios inevitáveis (pesos não informados, o LLM no Hall of Fame do PySR, os textos dos prompts B e C, etc.) e as contradições do artigo estão em `docs/CONFORMIDADE.md`, seções 5 e 6.
+Os desvios inevitáveis (pesos não informados, o LLM no Hall of Fame do PySR, os textos dos prompts B e C, etc.) e as contradições do artigo estão em `docs/CONFORMIDADE.md`, seções 5 e 6; as constatações da execução piloto e os ajustes, nas seções 7 e 8.
 
 ## How to cite
 

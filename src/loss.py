@@ -115,16 +115,21 @@ class Objective:
 
 class EarlyStopper:
     """"Optimization stopped if the best composite loss improved by less than 0.1% over three
-    generations" (p.6): compara a melhor loss atual com a de três gerações antes."""
+    generations" (p.6): compara a melhor loss atual com a de três gerações antes.
 
-    def __init__(self, tol=EARLY_STOP_TOLERANCE, window=EARLY_STOP_WINDOW):
+    ``min_generations`` [AJUSTE pós-piloto, perfil "adjusted"]: a parada só pode disparar depois
+    de registradas mais de ``min_generations`` gerações (no piloto, o DEAP parava na 3ª geração).
+    O padrão 0 reproduz o critério literal."""
+
+    def __init__(self, tol=EARLY_STOP_TOLERANCE, window=EARLY_STOP_WINDOW, min_generations=0):
         self.tol, self.window = tol, window
+        self.min_generations = int(min_generations)
         self.history = []
 
     def update(self, best_loss):
         best = min(best_loss, self.history[-1]) if self.history else best_loss
         self.history.append(best)
-        if len(self.history) <= self.window:
+        if len(self.history) <= max(self.window, self.min_generations):
             return False
         old = self.history[-1 - self.window]
         if not math.isfinite(old):

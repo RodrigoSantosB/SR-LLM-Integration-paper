@@ -46,11 +46,22 @@ def test_shm_times_within_one_period():
 
 
 def test_wave_stop_rule_and_b_zero():
+    # regra anterior ("equilibrium"): envelope < 1%, limitada a MAX_STEPS passos
     cap = MAX_STEPS * DG.WAVE_DT
-    assert DG.stop_time("wave", 1.0, 1.0, 0.0) == pytest.approx(cap)
-    assert DG.stop_time("wave", 1.0, 1.0, 1.0) == pytest.approx(2 * math.log(100))
+    assert DG.stop_time("wave", 1.0, 1.0, 0.0, "equilibrium") == pytest.approx(cap)
+    assert DG.stop_time("wave", 1.0, 1.0, 1.0, "equilibrium") == pytest.approx(2 * math.log(100))
+    # regra padrão ("period"): primeiro estado repetido (um período) ou equilíbrio, o que vier antes
+    assert DG.stop_time("wave", 1.0, 1.0, 0.0, "period") == pytest.approx(DG.WAVE_PERIOD)
+    assert DG.stop_time("wave", 1.0, 1.0, 1.0, "period") == pytest.approx(DG.WAVE_PERIOD)
+    assert DG.stop_time("wave", 1.0, 1.0, 1.0) == pytest.approx(DG.WAVE_PERIOD)
+    with pytest.raises(ValueError):
+        DG.stop_time("wave", 1.0, 1.0, 1.0, "nope")
     X, _, meta = DG.generate_clean("wave", n_experiments=N, steps=STEPS)
-    assert (meta["t_stop"] <= cap + 1e-12).all()
+    assert (meta["t_stop"] <= DG.WAVE_PERIOD + 1e-12).all()
+    # ~100 passos de dt = período/100 ("around 100 steps")
+    assert (meta["implied_steps"] <= 100).all()
+    _, _, meta_eq = DG.generate_clean("wave", n_experiments=N, steps=STEPS, wave_stop="equilibrium")
+    assert (meta_eq["t_stop"] <= cap + 1e-12).all()
     t = X[:, COL["t"]].reshape(N, STEPS)
     assert (np.diff(t, axis=1) >= 0).all() and (t.max(axis=1) <= meta["t_stop"]).all()
 

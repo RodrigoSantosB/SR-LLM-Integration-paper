@@ -15,6 +15,16 @@ não comutativos e o tamanho reflete a expressão que o SR de fato produziu. Ace
 infixa (PySR, verdade-base) e a prefixa (DEAP, gplearn: ``add(mul(x0, x1), 2.0)``).
 
 Representação: folha = str (variável) ou float (constante); nó = (op, filho) ou (op, esq, dir).
+
+[AJUSTE pós-piloto] Na execução piloto, a distância literal saturou em 1 em 2229 de 2240
+execuções: operador de topo diferente vale 1 sem crédito parcial, e formas matematicamente
+equivalentes (``(19.62*h)**0.5`` × ``sqrt(19.62*h)``) recebem 1. Duas medidas complementares:
+  - ``canonical_distance``: a mesma distância do artigo, calculada sobre as formas canônicas
+    (SymPy) das duas expressões — produtos e somas achatados e ordenados, constantes agrupadas,
+    expoentes reais próximos de frações simples convertidos em frações (h**0.5 → sqrt(h));
+  - ``structure_match``: 1 se as formas canônicas coincidem quando todas as constantes reais
+    são tratadas como livres (a estrutura da expressão é a da verdade-base), senão 0.
+A distância literal (``distance``) continua disponível e inalterada.
 """
 import ast
 import math
@@ -30,7 +40,7 @@ _BINARY_CALLS = {
 }
 _UNARY_CALLS = {
     "neg": "neg", "sin": "sin", "cos": "cos", "exp": "exp", "pexp": "exp", "log": "log",
-    "plog": "log", "sqrt": "sqrt", "abs": "abs", "inv": "inv", "square": "square", "cube": "cube",
+    "plog": "log", "sqrt": "sqrt", "psqrt": "sqrt", "abs": "abs", "inv": "inv", "square": "square", "cube": "cube",
 }
 _BINOPS = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/", ast.Pow: "^"}
 
@@ -193,3 +203,107 @@ class ExpressionTree:
 
     def __str__(self):
         return to_infix(self.root)
+
+
+# ---------------------------------------------------------------- formas canônicas (SymPy)
+_SYMBOLS = {}
+
+
+def _sym(name):
+    """Variáveis físicas positivas (m, L, h, t) ou não negativas (b), para que sqrt(1/m) e
+    1/sqrt(m) tenham a mesma forma canônica."""
+    import sympy as sp
+
+    if name not in _SYMBOLS:
+        _SYMBOLS[name] = sp.Symbol(name, nonnegative=True) if name == "b" else \
+            sp.Symbol(name, positive=True)
+    return _SYMBOLS[name]
+
+
+def to_sympy(t):
+    """Árvore → expressão SymPy (operadores protegidos tratados como os usuais)."""
+    import sympy as sp
+
+    if isinstance(t, float):
+        return sp.Float(t)
+    if isinstance(t, str):
+        return _sym(t)
+    op, args = t[0], [to_sympy(c) for c in t[1:]]
+    if len(args) == 1:
+        x = args[0]
+        return {"neg": lambda: -x, "sin": lambda: sp.sin(x), "cos": lambda: sp.cos(x),
+                "exp": lambda: sp.exp(x), "log": lambda: sp.log(x), "sqrt": lambda: sp.sqrt(x),
+                "abs": lambda: sp.Abs(x), "inv": lambda: 1 / x, "square": lambda: x ** 2,
+                "cube": lambda: x ** 3}[op]()
+    x, y = args
+    return {"+": lambda: x + y, "-": lambda: x - y, "*": lambda: x * y, "/": lambda: x / y,
+            "^": lambda: x ** y}[op]()
+
+
+def _rationalize_exponents(e, max_den=4, tol=1e-3):
+    """h**0.5 → sqrt(h), x**2.0 → x**2: expoentes reais próximos de p/q (q ≤ max_den)."""
+    import sympy as sp
+    from fractions import Fraction
+
+    def fix(p):
+        v = float(p.exp)
+        f = Fraction(v).limit_denominator(max_den)
+        return sp.Pow(p.base, sp.Rational(f.numerator, f.denominator)) if abs(v - float(f)) < tol else p
+
+    return e.replace(lambda x: x.is_Pow and x.exp.is_Float, fix)
+
+
+def canonical(expr_str, rename=None):
+    """Texto → forma canônica SymPy (ou None se não puder ser analisada)."""
+    import sympy as sp
+
+    try:
+        e = _rationalize_exponents(to_sympy(parse(expr_str, rename)))
+    except (ParseError, RecursionError, KeyError, ZeroDivisionError, TypeError, ValueError):
+        return None
+    ints = {f: sp.Integer(int(f)) for f in e.atoms(sp.Float) if float(f).is_integer()}
+    if ints:  # 1.0*x → x, 2.0 → 2 (constantes inteiras escritas como reais)
+        e = e.xreplace(ints)
+    if e.has(sp.zoo, sp.nan, sp.oo, -sp.oo):
+        return None
+    return e
+
+
+def canonical_tree(expr_str, rename=None):
+    """Forma canônica convertida de volta para a árvore usada pela distância do artigo."""
+    e = canonical(expr_str, rename)
+    if e is None:
+        return None
+    try:
+        return parse(str(e).replace("Abs(", "abs("))
+    except (ParseError, RecursionError):
+        return None
+
+
+def canonical_distance(pred_str, gt_str, rename=None, alpha=DISTANCE_ALPHA):
+    """Distância do artigo entre as formas canônicas; recai na distância literal se a forma
+    canônica não puder ser obtida."""
+    a, b = canonical_tree(pred_str, rename), canonical_tree(gt_str)
+    if a is None or b is None:
+        return distance(pred_str, gt_str, rename, alpha)
+    return tree_distance(a, b, alpha)
+
+
+def _skeleton(e):
+    """Substitui cada constante real por um mesmo símbolo livre (estrutura sem constantes)."""
+    import sympy as sp
+
+    c = sp.Symbol("_c")
+    floats = [f for f in e.atoms(sp.Float)]
+    return e.xreplace({f: c for f in floats}) if floats else e
+
+
+def structure_match(pred_str, gt_str, rename=None):
+    """1 se a expressão do SR tem a estrutura da verdade-base (constantes livres), senão 0."""
+    a, b = canonical(pred_str, rename), canonical(gt_str)
+    if a is None or b is None:
+        return 0
+    try:
+        return int(_skeleton(a) == _skeleton(b))
+    except Exception:
+        return 0

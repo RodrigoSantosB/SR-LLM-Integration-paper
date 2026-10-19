@@ -30,6 +30,14 @@ SHM_PHASE = 0.0              # rad
 WAVE_NUMBER_K = 1.0          # rad/m
 WAVE_OMEGA = 6.283185307179586  # rad/s (2*pi)
 EQUILIBRIUM_FRACTION = 0.01  # [DESVIO] critério de equilíbrio da onda: envelope < 1% de E0
+# Parada da onda. "until an equilibrium is achieved or the first time a state is observed twice
+# (for period dynamics). On average, this process took around 100 steps" (p.6).
+# "period" [AJUSTE pós-piloto, padrão]: a onda é periódica no tempo; o experimento termina no
+#   primeiro estado repetido (um período 2π/ω) ou no equilíbrio, o que vier antes — 100 passos de
+#   dt = período/100, coerente com "around 100 steps" (como a MHS, que já usa um período).
+# "equilibrium": versão anterior (até o envelope cair abaixo de 1%, limitado a 1000 passos —
+#   ≈ 10 períodos e ≈ 997 passos implícitos, incompatível com "around 100 steps").
+WAVE_STOP = "period"
 
 NOISE_LEVEL = 0.01           # "The noise level was set to 1% of each signal's variability" (p.6)
 NOISE_LEVELS = (0.01, 0.02, 0.03, 0.04, 0.05)  # "five levels— 1%, 2%, 3%, 4%, and 5%" (Noise robustness, p.7)
@@ -88,6 +96,15 @@ LLM_MODELS = {
 }
 LLM_MAX_NEW_TOKENS = 128
 # "we set the sampling temperature to zero" (p.6) → decodificação gulosa (do_sample=False).
+# [AJUSTE pós-piloto] Na execução piloto, LLaMA e Falcon falharam em 86–94% das respostas (texto
+# puro sem modelo de conversa: LLaMA devolvia sequências vazias, Falcon texto livre). A consulta
+# passa a usar o modelo de conversa (chat template) de cada modelo e a pré-preencher a resposta
+# com "[", de modo que o modelo continue diretamente a lista de escores. O texto do prompt
+# (PROMPT_TEMPLATE) não muda. LLM_QUERY_FORMAT entra na chave do cache: respostas obtidas com
+# outro formato (inclusive os escores neutros das falhas) não são reaproveitadas.
+LLM_CHAT_TEMPLATE = True
+LLM_RESPONSE_PREFIX = "["
+LLM_QUERY_FORMAT = "chat-prefill-v2"
 
 # ---------------------------------------------------------------- distância (Expression tree distance metric, p.7)
 DISTANCE_ALPHA = 0.1  # "the distance is α|v1 − v2| for α ∈ [0, 1], capped at one" [valor de α não informado]
@@ -98,3 +115,19 @@ SCENARIOS = ("ball_drop", "shm", "wave")
 SR_NAMES = ("deap", "pysr", "gplearn")
 LLM_NAMES = ("mistral", "llama", "falcon")
 PROMPT_IDS = ("A", "B", "C", "D", "E", "F", "G", "H")
+
+# ---------------------------------------------------------------- perfis de execução [AJUSTE pós-piloto]
+# "literal": especificação do artigo (Tabela 1 e Eq. 1 literais), com as correções de defeitos
+#            que valem para os dois perfis (consulta ao LLM, cache, distância, parada da onda).
+# "adjusted": variantes documentadas para as inconsistências do piloto (docs/CONFORMIDADE.md, §7):
+#   loss_scaling   — termos e e s em escala comparável a c (o MSE cru dominava ou era dominado);
+#   extra_ops      — sqrt nos três SR e exp no DEAP (sqrt ausente da Tabela 1; a GT da queda livre é √);
+#   min_generations— a parada antecipada só pode disparar após este nº de gerações (DEAP parava na 3ª);
+#   deap_init_depth— profundidade inicial do DEAP (com 1, o DEAP literal devolvia constantes).
+PROFILES = {
+    "literal": dict(loss_scaling=LOSS_SCALING, extra_ops=False, min_generations=0,
+                    deap_init_depth=DEAP["init_depth"]),
+    "adjusted": dict(loss_scaling="normalized", extra_ops=True, min_generations=10,
+                     deap_init_depth=(1, 3)),
+}
+EXTRA_OPS = dict(deap=("pexp", "psqrt"), pysr=("sqrt",), gplearn=("sqrt",))

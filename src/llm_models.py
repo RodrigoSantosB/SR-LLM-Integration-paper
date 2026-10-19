@@ -14,6 +14,11 @@ Aqui ``score_many`` devolve a média (c1+c2+c3)/3 ∈ [0, 1]; o ``Objective`` (l
 - HFLLM: transformers + bitsandbytes NF4 4-bit, decodificação gulosa ("we set the sampling
   temperature to zero", p.6), em lote com padding à esquerda, decodificando só os tokens novos.
 - ScoreCache: JSONL persistente; como a geração é determinística, a mesma pergunta não é refeita.
+  A chave inclui o formato da consulta (LLM_QUERY_FORMAT) e o cache guarda se a resposta foi
+  interpretada; respostas recuperadas do cache contam nas estatísticas de falha.
+- [AJUSTE pós-piloto] Consulta com o modelo de conversa (chat template) do modelo e resposta
+  pré-preenchida com "[" (LLM_CHAT_TEMPLATE, LLM_RESPONSE_PREFIX): no piloto, o LLaMA devolvia
+  sequências vazias e o Falcon texto livre em 86–94% das consultas com o prompt em texto puro.
 - DummyLLM / PromptAwareLLM: LLMs falsos para testes de integração (sem torch).
 """
 import ast
@@ -24,7 +29,8 @@ import os
 import re
 import time
 
-from constants import LLM_MAX_NEW_TOKENS, LLM_MODELS, PROMPT_IDS
+from constants import (LLM_CHAT_TEMPLATE, LLM_MAX_NEW_TOKENS, LLM_MODELS, LLM_QUERY_FORMAT,
+                       LLM_RESPONSE_PREFIX, PROMPT_IDS)
 
 # ---------------------------------------------------------------- prompt (idêntico ao código original)
 PROMPT_TEMPLATE = """### ROLE
@@ -147,30 +153,34 @@ def parse_llm_response(text):
 
 # ---------------------------------------------------------------- cache persistente
 class ScoreCache:
-    """Cache (modelo, sha1(contexto)[:12], expressão) → score, persistido em JSONL."""
+    """Cache (formato, modelo, sha1(contexto)[:12], expressão) → (score, interpretada), em JSONL.
 
-    def __init__(self, path=None):
+    Entradas gravadas com outro formato de consulta (outra chave) são ignoradas: um cache antigo
+    pode ser reaproveitado sem reutilizar os escores neutros das falhas do formato anterior."""
+
+    def __init__(self, path=None, query_format=LLM_QUERY_FORMAT):
         self.path = path
+        self.query_format = query_format
         self.mem = {}
         if path and os.path.exists(path):
             with open(path, encoding="utf-8") as f:
                 for line in f:
                     try:
                         r = json.loads(line)
-                        self.mem[r["key"]] = float(r["score"])
-                    except Exception:
+                        self.mem[r["key"]] = (float(r["score"]), bool(r.get("ok", True)))
+                    except Exception:  # linha corrompida (escrita interrompida)
                         pass
 
-    @staticmethod
-    def key(model_name, context, expr):
+    def key(self, model_name, context, expr):
         h = hashlib.sha1((context or "").encode("utf-8")).hexdigest()[:12]
-        return f"{model_name}|{h}|{expr}"
+        return f"{self.query_format}|{model_name}|{h}|{expr}"
 
     def get(self, k):
+        """(score, interpretada) ou None."""
         return self.mem.get(k)
 
     def put(self, k, score, ok=True, raw=""):
-        self.mem[k] = float(score)
+        self.mem[k] = (float(score), bool(ok))
         if self.path:
             d = os.path.dirname(self.path)
             if d:
@@ -187,6 +197,7 @@ class ScoreCache:
 class BaseLLM:
     """Interface comum. Subclasses implementam ``_generate_batch(prompts) -> list[str]``."""
     name = "base"
+    response_prefix = ""  # texto pré-preenchido na resposta (devolvido sem ele por _generate_batch)
 
     def __init__(self, cache=None):
         self.cache = cache if cache is not None else ScoreCache()
@@ -195,7 +206,8 @@ class BaseLLM:
     def reset_stats(self):
         self.n_calls = 0     # perguntas efetivamente enviadas ao LLM
         self.n_cached = 0    # respostas servidas pelo cache
-        self.n_fail = 0      # respostas sem lista válida (score 0.5)
+        self.n_fail = 0      # respostas novas sem lista válida (score 0.5)
+        self.n_cached_fail = 0  # respostas do cache que também não tinham lista válida
         self.seconds = 0.0   # tempo de geração
 
     def _generate_batch(self, prompts):
@@ -207,27 +219,30 @@ class BaseLLM:
         context = context or ""
         out, todo = {}, {}
         for key, text in items:
-            k = ScoreCache.key(self.name, context, key)
+            k = self.cache.key(self.name, context, key)
             if k in out or k in todo:
                 continue
             v = self.cache.get(k)
             if v is None:
                 todo[k] = text
             else:
-                out[k] = v
+                out[k] = v[0]
                 self.n_cached += 1
+                self.n_cached_fail += int(not v[1])
         if todo:
             keys = list(todo)
             t0 = time.time()
             raws = self._generate_batch([build_prompt(todo[k], context) for k in keys])
             self.seconds += time.time() - t0
             for k, raw in zip(keys, raws):
-                s, ok = parse_llm_response(raw)
+                s, ok = parse_llm_response(self.response_prefix + (raw or ""))
+                if not ok and self.response_prefix:  # o modelo repetiu o "[" pré-preenchido
+                    s, ok = parse_llm_response(raw)
                 self.n_calls += 1
                 self.n_fail += int(not ok)
                 self.cache.put(k, s, ok, raw)
                 out[k] = s
-        return [out[ScoreCache.key(self.name, context, key)] for key, _ in items]
+        return [out[self.cache.key(self.name, context, key)] for key, _ in items]
 
     def evaluate_equation(self, equation_str, context=None):
         """Compatibilidade com o código original: um único score em [0, 1]."""
@@ -241,8 +256,9 @@ class HFLLM(BaseLLM):
     """Modelo causal do Hugging Face, NF4 4-bit (como o original), greedy, em lote."""
 
     def __init__(self, model_id, name=None, cache=None, batch_size=16,
-                 max_new_tokens=LLM_MAX_NEW_TOKENS, chat_template=False, quantize=True,
-                 cache_dir=None, trust_remote_code=False):
+                 max_new_tokens=LLM_MAX_NEW_TOKENS, chat_template=LLM_CHAT_TEMPLATE,
+                 response_prefix=LLM_RESPONSE_PREFIX, quantize=True, cache_dir=None,
+                 trust_remote_code=False):
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
@@ -251,9 +267,10 @@ class HFLLM(BaseLLM):
         self.model_id = model_id
         self.batch_size = batch_size
         self.max_new_tokens = max_new_tokens
-        self.chat_template = chat_template  # o original não usa template de chat
         self.tok = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir,
                                                  trust_remote_code=trust_remote_code)
+        self.chat_template = chat_template  # o original não usa template de chat
+        self.response_prefix = response_prefix or ""
         self.tok.padding_side = "left"
         if self.tok.pad_token_id is None:
             self.tok.pad_token = self.tok.eos_token
@@ -272,10 +289,7 @@ class HFLLM(BaseLLM):
         self.model.eval()
 
     def _format(self, prompt):
-        if not self.chat_template:
-            return prompt
-        return self.tok.apply_chat_template([{"role": "user", "content": prompt}],
-                                            tokenize=False, add_generation_prompt=True)
+        return format_query(self.tok, prompt, self.chat_template, self.response_prefix)
 
     def _generate_batch(self, prompts):
         import torch
@@ -284,7 +298,7 @@ class HFLLM(BaseLLM):
         for i in range(0, len(prompts), self.batch_size):
             chunk = [self._format(p) for p in prompts[i:i + self.batch_size]]
             enc = self.tok(chunk, return_tensors="pt", padding=True,
-                           add_special_tokens=not self.chat_template).to(self.model.device)
+                           add_special_tokens=not self._templated).to(self.model.device)
             enc.pop("token_type_ids", None)  # Falcon não aceita
             with torch.no_grad():
                 gen = self.model.generate(
@@ -306,6 +320,26 @@ class HFLLM(BaseLLM):
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+
+    @property
+    def _templated(self):
+        return bool(self.chat_template and getattr(self.tok, "chat_template", None))
+
+
+def format_query(tok, prompt, chat_template=True, response_prefix=""):
+    """Texto enviado ao modelo. Com ``chat_template`` e um tokenizador que tenha modelo de conversa
+    (LLaMA-2-chat, Mistral-Instruct), usa ``apply_chat_template``; sem modelo de conversa no
+    tokenizador (Falcon-instruct), usa o formato de instrução "User: ...\nAssistant:". Em seguida
+    acrescenta ``response_prefix`` (início da resposta, ex. "[")."""
+    if not chat_template:
+        return prompt + response_prefix
+    if getattr(tok, "chat_template", None):
+        text = tok.apply_chat_template([{"role": "user", "content": prompt}],
+                                       tokenize=False, add_generation_prompt=True)
+    else:
+        text = f"User: {prompt}\nAssistant:" + (" " if response_prefix else "")
+    return text + response_prefix
 
 
 class MistralLLM(HFLLM):

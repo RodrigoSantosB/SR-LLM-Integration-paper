@@ -64,6 +64,11 @@ def plog(a):
     return np.where(a > PROTECT_EPS, np.log(np.maximum(a, PROTECT_EPS)), 0.0)
 
 
+def psqrt(a):
+    """Raiz protegida: sqrt(|a|) [AJUSTE pós-piloto, operador extra do perfil "adjusted"]."""
+    return np.sqrt(np.abs(np.asarray(a, float)))
+
+
 def pexp(a):
     with np.errstate(over="ignore"):
         return np.exp(np.clip(a, -EXP_CLIP, EXP_CLIP))
@@ -76,7 +81,7 @@ def _rand_const():
 DEAP_PRIMITIVES = {
     "add": (np.add, 2), "sub": (np.subtract, 2), "mul": (np.multiply, 2), "pdiv": (pdiv, 2),
     "neg": (np.negative, 1), "plog": (plog, 1), "sin": (np.sin, 1), "cos": (np.cos, 1),
-    "pexp": (pexp, 1),
+    "pexp": (pexp, 1), "psqrt": (psqrt, 1),
 }
 
 
@@ -90,8 +95,9 @@ class BaseSR:
     name = "base"
 
     def __init__(self, feature_names, pop_size=POPULATION_SIZE, generations=GENERATIONS, seed=0,
-                 verbose=False):
+                 verbose=False, min_generations=0):
         self.feature_names = list(feature_names)
+        self.min_generations = int(min_generations)
         self.pop_size, self.generations = int(pop_size), int(generations)
         self.seed = seed
         self.verbose = verbose
@@ -108,7 +114,7 @@ class BaseSR:
 
     def _start(self, objective):
         self._cache = {}
-        self._stopper = EarlyStopper()
+        self._stopper = EarlyStopper(min_generations=self.min_generations)
         self.history = []
         self.best_expr, self.best_row = None, None
         self.llm_seconds = 0.0
@@ -172,13 +178,14 @@ class DEAPModel(BaseSR):
     name = "deap"
 
     def __init__(self, feature_names, pop_size=POPULATION_SIZE, generations=GENERATIONS, seed=0,
-                 verbose=False, extra_unary=DEAP_EXTRA_UNARY, **overrides):
-        super().__init__(feature_names, pop_size, generations, seed, verbose)
+                 verbose=False, extra_unary=DEAP_EXTRA_UNARY, min_generations=0, **overrides):
+        super().__init__(feature_names, pop_size, generations, seed, verbose, min_generations)
         unknown = set(overrides) - set(DEAP)
         if unknown:
             raise TypeError(f"parâmetros DEAP desconhecidos: {sorted(unknown)}")
         self.params = {**DEAP, **overrides}
-        self.primitive_names = tuple(self.params["binary"]) + tuple(self.params["unary"]) + tuple(extra_unary)
+        self.primitive_names = tuple(dict.fromkeys(
+            tuple(self.params["binary"]) + tuple(self.params["unary"]) + tuple(extra_unary)))
         self.pset = self._build_pset()
 
     def _build_pset(self):
@@ -280,9 +287,10 @@ class GplearnModel(BaseSR):
     name = "gplearn"
 
     def __init__(self, feature_names, pop_size=POPULATION_SIZE, generations=GENERATIONS, seed=0,
-                 verbose=False, **overrides):
-        super().__init__(feature_names, pop_size, generations, seed, verbose)
+                 verbose=False, extra_unary=(), min_generations=0, **overrides):
+        super().__init__(feature_names, pop_size, generations, seed, verbose, min_generations)
         p = {**GPLEARN, **overrides}
+        p["unary"] = tuple(dict.fromkeys(tuple(p["unary"]) + tuple(extra_unary)))
         self.params = p
         self.rename = {f"X{i}": n for i, n in enumerate(self.feature_names)}
         self.function_names = tuple(p["binary"]) + tuple(p["unary"])
@@ -348,10 +356,10 @@ class PySRModel(BaseSR):
     name = "pysr"
 
     def __init__(self, feature_names, pop_size=POPULATION_SIZE, generations=GENERATIONS, seed=0,
-                 verbose=False, **overrides):
-        super().__init__(feature_names, pop_size, generations, seed, verbose)
+                 verbose=False, extra_unary=(), min_generations=0, **overrides):
+        super().__init__(feature_names, pop_size, generations, seed, verbose, min_generations)
         self.binary_operators = list(PYSR["binary"])
-        self.unary_operators = list(PYSR["unary"])
+        self.unary_operators = list(dict.fromkeys(list(PYSR["unary"]) + list(extra_unary)))
         self.pysr_params = dict(
             populations=PYSR["populations"], population_size=self.pop_size,
             niterations=1, warm_start=True,

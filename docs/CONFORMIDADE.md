@@ -33,9 +33,9 @@ O código original foi preservado em `src/legacy/`. As especificações numéric
 | A1 | "N = 500 experiments" | `N_EXPERIMENTS` | F |
 | A2 | Cinco parâmetros uniformes: massa 0,1–10 kg; comprimento característico 0,01–0,5 m; altura/deslocamento inicial 1–100 m; arrasto/amortecimento 0–1 kg/s; tempo | `data_generation.generate_clean`; matriz X = (m, L, h, b, t) em unidades SI, para todos os cenários | F |
 | A3 | "time, sampled randomly between zero and … √(2h/g)" | Tempos uniformes ordenados em [0, T_parada]; na queda livre, T = √(2h/g) | F (queda); I (MHS, onda) |
-| A4 | "run until reaching equilibrium or 1000 steps" / "first time a state is observed twice (for period dynamics)" | Queda: impacto. MHS: um período (primeiro estado repetido). Onda: envelope < 1% de E0, limitado a 1000 passos | I. Na onda, a média de passos implícitos é ≈ 997 (b ~ U(0,1) decai devagar), contra os "≈100" do texto |
+| A4 | "run until reaching equilibrium or 1000 steps" / "first time a state is observed twice (for period dynamics)" | Queda: impacto. MHS: um período (primeiro estado repetido). Onda: um período 2π/ω ou o equilíbrio, o que vier antes (`WAVE_STOP="period"`, ajuste A1 da seção 8); a regra anterior (envelope < 1%, até 1000 passos) continua disponível como `"equilibrium"` | I. Com `"period"`, 100 passos por experimento, coerente com os "≈100" do texto (a regra anterior implicava ≈ 997) |
 | A5 | "around 100 steps … around 50,000 samples" | 100 amostras por experimento → 50 000 linhas | I |
-| A6 | Equações 2–4 | Queda: `v = sqrt(2*9.81*h)`. MHS: A = L, com k = 1 e φ = 0. Onda: E0 = h, α = b, x = L, k = 1, ω = 2π | D2: constantes não definidas no artigo, com os valores do código original |
+| A6 | Equações 2–4 | Queda: `v = sqrt(2*9.81*h)`. MHS: A = L, com k = 1 e φ = 0 (`x = L*cos(sqrt(1.0/m)*t)`). Onda: E0 = h, α = b, x = L, k = 1, ω = 2π (`E = h*exp(-b*t/2)*cos(L - 6.28…*t)`). Fase nula e k = 1 não entram como nós neutros na verdade-base | D2: constantes não definidas no artigo, com os valores do código original |
 | A7 | Ruído "1% of each signal's variability", SNR ≈ 40 dB | σ = 0,01·std(coluna); SNR medido = 40,02 dB | F |
 | A8 | "retained in their original SI units … relying on the regression models to manage any required scaling" | Sem padronização (o original padronizava X no PySR) | F |
 | A9 | Robustez: 1–5% "separately to the input features and to the target" + colunas "Both" (Tabela 3) | `add_noise(mode ∈ {features, target, both})`, aplicado sobre dados limpos | F |
@@ -64,7 +64,7 @@ O código original foi preservado em `src/legacy/`. As especificações numéric
 | P3 | Prompts A–H | `llm_models.context_for`, `runner.specs_prompts`; B e C reescritos | D5: material suplementar indisponível |
 | P4 | Robustez a ruído (Tabelas 3 e 4) | `runner.specs_noise`; LLM e prompt das tabelas não informados → Mistral, prompt A, mais a linha de base | D6 |
 | P5 | MAE, MSE, 1−R² e distância de árvore | `runner.run_one` (sobre todo o conjunto; o artigo não especifica partição) | F/I |
-| P6 | Distância: folha igual = 0; variáveis diferentes = 1; números α\|Δ\| limitado a 1; folha × nó = 1; operador diferente = 1; comutativos pelo menor pareamento; não comutativos esquerda-esquerda/direita-direita; soma normalizada pelo nº de comparações | `expression_tree.tree_distance` sobre árvore `ast`, sem simplificação ("−" e "/" preservados); subárvores só numéricas são reduzidas; α = 0,1 | F (α não informado: I) |
+| P6 | Distância: folha igual = 0; variáveis diferentes = 1; números α\|Δ\| limitado a 1; folha × nó = 1; operador diferente = 1; comutativos pelo menor pareamento; não comutativos esquerda-esquerda/direita-direita; soma normalizada pelo nº de comparações | `expression_tree.tree_distance` com as regras do texto e α = 0,1. Coluna `distance`: aplicada às formas canônicas (SymPy) das duas expressões; `distance_literal`: aplicada ao texto produzido pelo SR, sem simplificação; `structure_match`: estrutura igual à da verdade-base com constantes livres (ajuste A2 da seção 8) | F nas regras; I na forma canônica (o artigo não diz como as expressões são escritas antes da comparação) |
 | P7 | "zero distance signifies structural equivalence" (p.7) | 0 = equivalente | C2: a p.8 chama 1,00 de "perfect reconstruction"; as tabelas usam 0 como ótimo |
 | P8 | Razão de tempo LLM/RS "typically remains below 0.4" (p.8) | Tempos de RS e LLM por execução; Tabela 6 com os valores publicados ao lado | F |
 
@@ -89,6 +89,40 @@ Execuções com dados no tamanho do artigo (500 × 100), uma repetição e avali
 3. **Com a escala literal da Eq. 1, o termo do LLM é pequeno.** O MSE cru é da ordem de 10²–10³ na queda livre, enquanto c ∈ [0, 1] e w3 ≈ 0,33. Por isso a influência do LLM só aparece entre candidatos de erro semelhante: no teste de integração, o prompt D mudou a expressão escolhida pelo gplearn, mas não a do DEAP. Para termos em escala comparável, use `--loss-scaling normalized` (desvio opcional).
 4. **Custo.** Na CPU, cada execução do gplearn leva cerca de 100 s e faz cerca de 2 900 consultas ao LLM, das quais muitas são atendidas pelo cache. A estimativa do protocolo completo deve vir do modo `pilot` (`runner.estimate_remaining`).
 
-## 7. Código legado
+## 7. Constatações da execução piloto real (18–19/10/2026)
+
+Colab A100, grid completo (3 cenários × 3 SR × {linha de base, Mistral, LLaMA, Falcon}, prompts A–H, ruído de média zero e enviesado), n = 3, perfil literal, commit `3ae996c`; 2240 execuções, ≈ 17,5 h. Resultados e relatório: `relatorio_reproducao_SR-LLM.md` (repositório do grupo).
+
+1. **Distância saturada:** 1,0 em 2229 das 2240 execuções (operador de topo diferente vale 1; `sqrt` ausente dos operadores; formas equivalentes como `(19.62*h)**0.5` recebiam 1; nó neutro `+ 0.0` na verdade-base do MHS).
+2. **Interpretação das respostas:** LLaMA e Falcon falharam em 86–94% das consultas novas (LLaMA: sequências vazias; Falcon: texto livre). Com o escore neutro 0,5 em todas as candidatas, L = ⅔·L_base + ⅙ e a seleção coincide com a da linha de base. A taxa de falha era subestimada (o cache contava como sucesso) e os escores neutros ficavam no cache.
+3. **Escala da perda:** na queda livre e na onda o MSE cru (10²–10³) domina; no MHS (var(y) = 0,04) o termo s domina e o escore do Mistral passou a selecionar expressões piores.
+4. **Busca interrompida:** DEAP para na 3ª geração em 758 de 792 execuções e devolve constantes; PySR para em 4–10 iterações.
+5. **Onda:** com a regra anterior de parada (≈ 10 períodos), var(y) ≈ 466 e todos os algoritmos devolveram expressões quase constantes.
+6. **Tempos:** médias por execução distorcidas pelas execuções atendidas inteiramente pelo cache.
+
+## 8. Ajustes pós-piloto
+
+Correções que valem para os dois perfis (defeitos):
+
+| # | Ajuste | Implementação |
+|---|---|---|
+| A1 | Parada da onda: primeiro estado repetido (um período) ou equilíbrio | `constants.WAVE_STOP="period"`, `data_generation.stop_time` |
+| A2 | Distância sobre formas canônicas + estrutura com constantes livres; verdade-base sem nós neutros | `expression_tree.canonical_distance`, `structure_match`, `_gt_shm`, `_gt_wave`; colunas `distance`, `distance_literal`, `structure_match` |
+| A3 | Consulta com o modelo de conversa de cada LLM e resposta pré-preenchida com "[" (texto do prompt inalterado) | `constants.LLM_CHAT_TEMPLATE`, `LLM_RESPONSE_PREFIX`; `llm_models.format_query` (Falcon-instruct, sem modelo de conversa no tokenizador: formato "User: …\nAssistant:") |
+| A4 | Cache versionado pelo formato da consulta e com o indicador de resposta interpretada; falhas do cache contam nas estatísticas | `LLM_QUERY_FORMAT` na chave; `ScoreCache.get → (score, ok)`; colunas `llm_fail_rate` (todas as consultas) e `llm_fail_rate_new` (só as novas) |
+| A5 | Tempos de LLM só das execuções com chamadas novas | `plot_secondary_results.table6`, `llm_overhead` |
+| A6 | Resultados de versões ou perfis diferentes nunca se misturam | pasta `results_runs/<modo>_<perfil>/`; `ResultStore` recusa um CSV com outras colunas |
+| A7 | Verificação curta das correções com LLMs reais | modo `verify`: queda livre × 3 SR × {Mistral, LLaMA}, prompts A e D, ruído 1% e 5%, n = 1 |
+
+Variantes do perfil `adjusted` (`--profile adjusted`; o perfil `literal` mantém a especificação do artigo):
+
+| # | Variante | Valor | Motivo |
+|---|---|---|---|
+| V1 | `loss_scaling="normalized"` | e = MSE/var(y), s = min(1, nós/30) | Termos em escala comparável a c (constatação 3) |
+| V2 | `extra_ops=True` | `sqrt` protegida nos três SR; `exp` no DEAP | A verdade-base da queda livre é uma raiz; a Tabela 1 retira exp do DEAP (C1) |
+| V3 | `min_generations=10` | a parada antecipada só dispara após 10 gerações | Constatação 4 |
+| V4 | `deap_init_depth=(1, 3)` | profundidade inicial do DEAP | Com 1, o DEAP literal devolvia constantes |
+
+## 9. Código legado
 
 `src/legacy/` contém o código original, sem alterações. Nele, o LLM avalia apenas a equação final e os pesos otimizados nunca chegam ao SR (ver `relatorio_review_SR-LLM.md`).

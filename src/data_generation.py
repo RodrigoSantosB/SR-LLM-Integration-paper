@@ -32,9 +32,11 @@ Interpretações (o artigo é omisso; ver docs/CONFORMIDADE.md):
   4. T_parada por cenário:
        ball_drop: impacto no solo, sqrt(2h/g) (equilíbrio; é o máximo citado pelo artigo);
        shm:       primeiro estado repetido = um período 2π·sqrt(m/k);
-       wave:      envelope e^{−bt/2} < EQUILIBRIUM_FRACTION ⇒ T = 2·ln(1/EQUILIBRIUM_FRACTION)/b
-                  [DESVIO no limiar], limitado a MAX_STEPS passos de dt = (2π/ω)/STEPS_PER_EXPERIMENT;
-                  b = 0 nunca atinge equilíbrio ⇒ usa o limite de MAX_STEPS passos.
+       wave:      WAVE_STOP = "period" [AJUSTE pós-piloto, padrão]: primeiro estado repetido = um
+                  período 2π/ω (ou o equilíbrio, se vier antes), como a MHS → 100 passos de
+                  dt = (2π/ω)/STEPS_PER_EXPERIMENT, coerente com "around 100 steps".
+                  WAVE_STOP = "equilibrium" (versão anterior): envelope e^{−bt/2} < EQUILIBRIUM_FRACTION
+                  ⇒ T = 2·ln(1/EQUILIBRIUM_FRACTION)/b, limitado a MAX_STEPS passos (≈ 10 períodos).
      O nº de passos implícito min(MAX_STEPS, ceil(T/dt)) fica em meta["implied_steps"] (documental).
   5. Ruído com σ = nível·std(coluna); no modo "features" o ruído é aplicado a todas as colunas de X
      (inclusive t). Ruído enviesado: µ = BIAS_FRACTION·média(coluna), mesmo σ.
@@ -46,12 +48,32 @@ import numpy as np
 from constants import (BIAS_FRACTION, DAMPING_RANGE, EQUILIBRIUM_FRACTION, FEATURES, GRAVITY,
                        HEIGHT_RANGE, LENGTH_RANGE, MASS_RANGE, MAX_STEPS, N_EXPERIMENTS, NOISE_LEVEL,
                        NOISE_MODES, SHM_PHASE, SHM_SPRING_K, STEPS_PER_EXPERIMENT, WAVE_NUMBER_K,
-                       WAVE_OMEGA)
+                       WAVE_OMEGA, WAVE_STOP)
 
 _NOISE_STREAM = 0x501  # separa o gerador do ruído do gerador dos parâmetros com a mesma semente
 
 # dt da onda: um período de oscilação dividido em STEPS_PER_EXPERIMENT passos
-WAVE_DT = (2.0 * math.pi / WAVE_OMEGA) / STEPS_PER_EXPERIMENT
+WAVE_PERIOD = 2.0 * math.pi / WAVE_OMEGA
+WAVE_DT = WAVE_PERIOD / STEPS_PER_EXPERIMENT
+
+
+def _num(v):
+    """Constante como texto da GT (1.0 → "1.0")."""
+    return repr(float(v))
+
+
+def _gt_shm():
+    # [AJUSTE pós-piloto] a fase nula não entra como nó "+ 0.0": ela penalizava a distância até
+    # da expressão correta.
+    phase = f" + {_num(SHM_PHASE)}" if SHM_PHASE else ""
+    return f"x = L*cos(sqrt({_num(SHM_SPRING_K)}/m)*t{phase})"
+
+
+def _gt_wave():
+    # [AJUSTE pós-piloto] k = 1 não entra como nó "1.0*L" (mesmo motivo).
+    kx = "L" if WAVE_NUMBER_K == 1 else f"{_num(WAVE_NUMBER_K)}*L"
+    return f"E = h*exp(-b*t/2)*cos({kx} - {_num(WAVE_OMEGA)}*t)"
+
 
 SCENARIOS = {
     "ball_drop": {
@@ -64,7 +86,7 @@ SCENARIOS = {
     },
     "shm": {
         "target": "x",
-        "gt": f"x = L*cos(sqrt({SHM_SPRING_K}/m)*t + {SHM_PHASE})",
+        "gt": _gt_shm(),
         "features": FEATURES,
         "label": "Movimento harmônico simples",
         "description": ("Uma massa m presa a uma mola oscila com amplitude L e mede-se o seu "
@@ -72,7 +94,7 @@ SCENARIOS = {
     },
     "wave": {
         "target": "E",
-        "gt": f"E = h*exp(-b*t/2)*cos({WAVE_NUMBER_K}*L - {WAVE_OMEGA}*t)",
+        "gt": _gt_wave(),
         "features": FEATURES,
         "label": "Onda eletromagnética amortecida",
         "description": ("Uma onda plana com amplitude inicial h e coeficiente de amortecimento b "
@@ -92,13 +114,19 @@ def _target(scenario, m, L, h, b, t):
     raise ValueError(f"cenário desconhecido: {scenario!r}")
 
 
-def stop_time(scenario, m, h, b):
+def stop_time(scenario, m, h, b, wave_stop=None):
     """Instante de parada do experimento (equilíbrio, estado repetido ou MAX_STEPS)."""
     if scenario == "ball_drop":
         return math.sqrt(2 * h / GRAVITY)                     # impacto no solo
     if scenario == "shm":
         return 2 * math.pi * math.sqrt(m / SHM_SPRING_K)      # primeiro estado repetido
     if scenario == "wave":
+        wave_stop = wave_stop or WAVE_STOP
+        equilibrium = 2 * math.log(1 / EQUILIBRIUM_FRACTION) / b if b > 0 else math.inf
+        if wave_stop == "period":
+            return min(WAVE_PERIOD, equilibrium)                # primeiro estado repetido
+        if wave_stop != "equilibrium":
+            raise ValueError(f"WAVE_STOP desconhecido: {wave_stop!r}")
         cap = MAX_STEPS * WAVE_DT
         if b <= 0:
             return cap                                        # sem amortecimento: nunca equilibra
@@ -106,7 +134,8 @@ def stop_time(scenario, m, h, b):
     raise ValueError(f"cenário desconhecido: {scenario!r}")
 
 
-def generate_clean(scenario, n_experiments=N_EXPERIMENTS, steps=STEPS_PER_EXPERIMENT, seed=0):
+def generate_clean(scenario, n_experiments=N_EXPERIMENTS, steps=STEPS_PER_EXPERIMENT, seed=0,
+                   wave_stop=None):
     """Dados ideais (sem ruído). Retorna X (n·steps, 5) nas colunas FEATURES, y (n·steps,) e meta."""
     if scenario not in SCENARIOS:
         raise ValueError(f"cenário desconhecido: {scenario!r}")
@@ -117,7 +146,7 @@ def generate_clean(scenario, n_experiments=N_EXPERIMENTS, steps=STEPS_PER_EXPERI
         L = rng.uniform(*LENGTH_RANGE)
         h = rng.uniform(*HEIGHT_RANGE)
         b = rng.uniform(*DAMPING_RANGE)
-        T = stop_time(scenario, m, h, b)
+        T = stop_time(scenario, m, h, b, wave_stop)
         t = np.sort(rng.uniform(0.0, T, steps))
         const = np.ones(steps)
         blocks.append(np.column_stack([m * const, L * const, h * const, b * const, t]))
