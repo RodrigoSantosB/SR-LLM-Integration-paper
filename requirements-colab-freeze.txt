@@ -355,7 +355,7 @@ opencv-contrib-python==4.11.0.86
 opencv-python==4.11.0.86
 opencv-python-headless==4.11.0.86
 openpyxl==3.1.5
-opentelemetry-api==1.16.0
+opentelemetry-api==1.45.1
 opentelemetry-sdk==1.16.0
 opentelemetry-semantic-conventions==0.37b0
 opt-einsum==3.4.0
