@@ -201,6 +201,8 @@ def llm_overhead(df):
     d = df[df.llm != "none"].copy()
     if "llm_fail_rate_new" not in d.columns:
         d["llm_fail_rate_new"] = d["llm_fail_rate"]
+    if "llm_copy_rate" not in d.columns:
+        d["llm_copy_rate"] = np.nan
     # a razão de tempo só é informativa nas execuções com chamadas novas (as demais vêm do cache)
     d["llm_ratio_new"] = d["llm_ratio"].where(d["llm_calls"] > 0)
     return d.groupby(["sr", "llm"]).agg(
@@ -209,6 +211,7 @@ def llm_overhead(df):
         respostas_cache_media=("llm_cached", "mean"),
         falha_parse_media=("llm_fail_rate", "mean"),
         falha_parse_novas_media=("llm_fail_rate_new", "mean"),
+        copia_exemplo_media=("llm_copy_rate", "mean"),
         execucoes=("key", "count"),
     ).round(3)
 

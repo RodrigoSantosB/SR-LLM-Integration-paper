@@ -15,6 +15,8 @@ Este documento descreve **o que mudou, onde e por quê**. Para a correspondênci
 | Controle | `4a0e5ba`, `1e30b5c` | Executar o código original, com patches mínimos, para demonstrar esse defeito |
 | Atribuição | `3ae996c` | Indicar a origem e a licença (Apache-2.0) |
 | Ajustes pós-piloto | `f6358df` | Corrigir as inconsistências encontradas na execução piloto real (Colab A100, n = 3, 2240 execuções, 18–19/10/2026) |
+| Documentação | `6d24239` | Este registro |
+| Ajustes pós-`verify` | (seção 6) | Corrigir a consulta ao LLaMA e medir as cópias de exemplos, a partir da execução `verify` de 26–27/10/2026 |
 
 ---
 
@@ -122,7 +124,42 @@ O perfil `literal` (padrão) mantém a especificação do artigo. O `adjusted` a
 
 ---
 
-## 6. Compatibilidade
+## 6. Ajustes pós-`verify` (A8)
+
+### 6.1 Diagnóstico da execução `verify`
+
+Colab A100, commit `f6358df`, perfil `literal`. As variáveis de escopo foram preenchidas, o que sobrescreveu o modo: grid completo, n = 1, 423 execuções, ≈ 8 h.
+
+| Observação | Causa | Ação |
+|---|---|---|
+| Distância 1,0 e `structure_match` 0 em todas as etapas | **Não é defeito da métrica.** As 468 distâncias recalculadas conferem e as formas corretas dão 0. As expressões encontradas não têm a estrutura das verdades-base (`3.91*9.13`, `log(h)/0.077 − 18.22`, `L`, `−log(t)`): sem `sqrt`, parada na ≈ 3ª geração e MSE cru dominante no perfil literal | Executar o perfil `adjusted` |
+| LLaMA com 2,7% de respostas interpretadas | O `[` pré-preenchido logo após `[/INST]` foi lido como início de tag: respostas `Inst]`, `Assistant]:` e a linha de formato copiada | Prefixo `"Output: ["`, que repete o formato dos exemplos do prompt |
+| Falcon com 78% interpretadas, mas 50,6% delas copiando os escores de um exemplo e 23% em `[0.5, 0.5, 0.5]` | O modelo reproduz os exemplos em vez de avaliar a expressão | Prefixo `"Output: ["` e nova coluna `llm_copy_rate`, para relatar a qualidade das respostas |
+| Mistral com 0,1% de falhas (`050`) | Número sem o ponto decimal | Leitura tolerante: `050` → 0,50 |
+| 468 execuções no modo `verify` | Listas de escopo explícitas sobrescrevem o modo | Aviso na célula de configuração do notebook; o escopo padrão do `verify` tem 93 execuções |
+
+### 6.2 Alterações
+
+| Arquivo | Alteração |
+|---|---|
+| `src/constants.py` | `LLM_RESPONSE_PREFIX` passa a ser um dicionário por modelo (`default: "["`, `llama` e `falcon`: `"Output: ["`); `LLM_QUERY_FORMAT = "chat-prefill-v3"` (o cache de `f6358df` não é reaproveitado); `FEWSHOT_SCORES` com os escores dos três exemplos do prompt |
+| `src/llm_models.py` | `response_prefix_for(nome)`; `parse_llm_scores` (devolve os três escores) com leitura tolerante de zero à esquerda; `is_example_copy`; o cache grava e lê o indicador `copy`; contadores `n_copy` e `n_cached_copy`; `HFLLM(response_prefix=None)` usa o prefixo do modelo |
+| `src/runner.py` | Coluna `llm_copy_rate` (novas e do cache) |
+| `src/plot_secondary_results.py` | `overhead_llm.csv` com `copia_exemplo_media` |
+| `tests/test_ajustes_verify.py` | 10 testes: prefixo por modelo e consulta resultante, versão do formato, leitura tolerante, as respostas inválidas do LLaMA continuam falhas, detecção de cópias (novas e do cache), coluna no `run_one` |
+| `colab/build_notebook.py` (fora do repositório) | Aviso quando `LLMS`, `SRS`, `SCENARIOS` ou `PROMPTS` sobrescrevem o escopo de `smoke`, `pilot` ou `verify`, com o número de execuções previsto |
+
+O texto do prompt não muda. A coluna nova altera o cabeçalho dos CSVs: resultados de `f6358df` não são retomados (use uma pasta nova).
+
+### 6.3 Validação
+- `pytest -m "not slow"`: 113 testes passando.
+- `run.py --mode smoke --srs deap gplearn`, perfis `literal` e `adjusted`: sem erros.
+- Reprocessamento do `llm_cache.jsonl` da execução `verify` com a nova leitura: Mistral 99,9% → 100%; cópias de exemplo: Falcon 50,6%, LLaMA 1,0%, Mistral 0%.
+- **Pendente:** o efeito do prefixo `"Output: ["` sobre o LLaMA só pode ser confirmado com o modelo real (modo `verify` no Colab).
+
+---
+
+## 7. Compatibilidade
 
 - **Resultados antigos:** CSVs de versões anteriores não são retomados (erro explícito). Use uma pasta nova; no notebook, `real_literal` ou `real_adjusted`, em vez de `real`.
 - **Cache antigo:** pode continuar no disco. As entradas antigas são ignoradas, porque a chave mudou.
@@ -131,7 +168,7 @@ O perfil `literal` (padrão) mantém a especificação do artigo. O `adjusted` a
 
 ---
 
-## 7. Uso
+## 8. Uso
 
 ```bash
 python src/run.py --mode smoke                       # CPU, LLM falso
@@ -144,7 +181,7 @@ python src/run.py --mode full   --profile literal    # protocolo do artigo, n = 
 
 ---
 
-## 8. Validação
+## 9. Validação
 
 | Verificação | Resultado |
 |---|---|

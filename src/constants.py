@@ -103,8 +103,16 @@ LLM_MAX_NEW_TOKENS = 128
 # (PROMPT_TEMPLATE) não muda. LLM_QUERY_FORMAT entra na chave do cache: respostas obtidas com
 # outro formato (inclusive os escores neutros das falhas) não são reaproveitadas.
 LLM_CHAT_TEMPLATE = True
-LLM_RESPONSE_PREFIX = "["
-LLM_QUERY_FORMAT = "chat-prefill-v2"
+# [AJUSTE pós-verify] Na execução "verify" (26–27/10/2026), o "[" solto logo após o fechamento da
+# instrução do LLaMA-2-chat ("[/INST]") foi lido como início de uma tag do próprio modelo: 97% das
+# respostas foram "Inst]", "Assistant]:" ou a linha de formato copiada. Para o LLaMA e o Falcon, a
+# resposta passa a começar com "Output: [", o mesmo formato dos exemplos do prompt
+# ("Output:  [0.95, ...]"). O Mistral, que respondeu corretamente em 99,9% dos casos, mantém "[".
+LLM_RESPONSE_PREFIX = {"default": "[", "llama": "Output: [", "falcon": "Output: ["}
+LLM_QUERY_FORMAT = "chat-prefill-v3"
+# Escores dos três exemplos do prompt (PROMPT_TEMPLATE). Uma resposta que repete um deles é contada
+# como cópia do exemplo (coluna llm_copy_rate); o escore não é alterado.
+FEWSHOT_SCORES = ((0.95, 0.80, 0.92), (0.05, 0.70, 0.15), (0.90, 0.10, 0.40))
 
 # ---------------------------------------------------------------- distância (Expression tree distance metric, p.7)
 DISTANCE_ALPHA = 0.1  # "the distance is α|v1 − v2| for α ∈ [0, 1], capped at one" [valor de α não informado]

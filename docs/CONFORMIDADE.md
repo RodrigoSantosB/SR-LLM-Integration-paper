@@ -100,6 +100,14 @@ Colab A100, grid completo (3 cenários × 3 SR × {linha de base, Mistral, LLaMA
 5. **Onda:** com a regra anterior de parada (≈ 10 períodos), var(y) ≈ 466 e todos os algoritmos devolveram expressões quase constantes.
 6. **Tempos:** médias por execução distorcidas pelas execuções atendidas inteiramente pelo cache.
 
+**Execução `verify` (26–27/10/2026, commit `f6358df`, perfil literal; escopo sobrescrito para o grid completo, n = 1, 423 execuções):**
+
+7. **Métrica consistente, busca sem estrutura.** As 468 distâncias recalculadas coincidem com as gravadas, e as formas corretas recebem 0. A distância é 1 porque as expressões encontradas não têm a estrutura das verdades-base, como `3.91*9.13`, `log(h)/0.077 − 18.22`, `L` e `−log(t)`. Isso é esperado no perfil literal (constatações 3 e 4); o perfil `adjusted` ainda não tinha sido executado.
+8. **Consulta ao LLM (A3):**
+   - **Mistral:** 99,9% das respostas interpretadas; as falhas eram números como `050`.
+   - **Falcon:** de ≈ 10% para 78% interpretadas, mas 50,6% dessas respostas repetem os escores de um exemplo do prompt e 23% são `[0.5, 0.5, 0.5]`.
+   - **LLaMA:** continuou em 2,7% interpretadas. O `[` pré-preenchido logo após `[/INST]` produziu `Inst]` (12 381), `Assistant]:` (5108) e a linha de formato copiada (5133).
+
 ## 8. Ajustes pós-piloto
 
 Descrição detalhada, com arquivos, funções e formato dos resultados: [`ALTERACOES.md`](ALTERACOES.md).
@@ -115,6 +123,7 @@ Correções que valem para os dois perfis (defeitos):
 | A5 | Tempos de LLM só das execuções com chamadas novas | `plot_secondary_results.table6`, `llm_overhead` |
 | A6 | Resultados de versões ou perfis diferentes nunca se misturam | pasta `results_runs/<modo>_<perfil>/`; `ResultStore` recusa um CSV com outras colunas |
 | A7 | Verificação curta das correções com LLMs reais | modo `verify`: queda livre × 3 SR × {Mistral, LLaMA}, prompts A e D, ruído 1% e 5%, n = 1 |
+| A8 | Pós-`verify`: prefixo da resposta por modelo, leitura tolerante e registro de cópias | `LLM_RESPONSE_PREFIX` por modelo (`"Output: ["` para LLaMA e Falcon, `"["` para o Mistral); `LLM_QUERY_FORMAT="chat-prefill-v3"`; `050` → 0,50; coluna `llm_copy_rate` (respostas que repetem os escores de um exemplo do prompt; o escore não é alterado) |
 
 Variantes do perfil `adjusted` (`--profile adjusted`; o perfil `literal` mantém a especificação do artigo):
 

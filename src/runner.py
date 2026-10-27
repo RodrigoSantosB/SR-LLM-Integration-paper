@@ -37,7 +37,7 @@ COLUMNS = [
     "MAE", "MSE", "one_minus_R2", "R2", "distance", "distance_literal", "structure_match",
     "size", "plaus", "loss", "equation", "raw_equation", "n_generations", "n_evaluated",
     "sr_seconds", "llm_seconds", "llm_ratio", "llm_calls", "llm_cached", "llm_fail_rate",
-    "llm_fail_rate_new", "profile", "timestamp",
+    "llm_fail_rate_new", "llm_copy_rate", "profile", "timestamp",
 ]
 
 MODES = {
@@ -174,6 +174,8 @@ def run_one(spec, cfg, scorer=None):
         # falhas sobre todas as consultas (novas e do cache) e só sobre as novas
         llm_fail_rate=((st["n_fail"] + st["n_cached_fail"]) / asked) if asked else np.nan,
         llm_fail_rate_new=(st["n_fail"] / st["n_calls"]) if st["n_calls"] else np.nan,
+        # respostas que repetem os escores de um exemplo do prompt (novas e do cache)
+        llm_copy_rate=((st["n_copy"] + st["n_cached_copy"]) / asked) if asked else np.nan,
         profile=cfg.get("profile", "literal"),
         timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
     )
@@ -182,9 +184,12 @@ def run_one(spec, cfg, scorer=None):
 
 def _stats(scorer):
     if scorer is None:
-        return dict(n_calls=0, n_cached=0, n_fail=0, n_cached_fail=0, seconds=0.0)
+        return dict(n_calls=0, n_cached=0, n_fail=0, n_cached_fail=0, n_copy=0, n_cached_copy=0,
+                    seconds=0.0)
     return dict(n_calls=scorer.n_calls, n_cached=scorer.n_cached, n_fail=scorer.n_fail,
-                n_cached_fail=getattr(scorer, "n_cached_fail", 0), seconds=scorer.seconds)
+                n_cached_fail=getattr(scorer, "n_cached_fail", 0),
+                n_copy=getattr(scorer, "n_copy", 0), n_cached_copy=getattr(scorer, "n_cached_copy", 0),
+                seconds=scorer.seconds)
 
 
 class ResultStore:

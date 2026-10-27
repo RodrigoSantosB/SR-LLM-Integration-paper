@@ -19,6 +19,9 @@ Aqui ``score_many`` devolve a média (c1+c2+c3)/3 ∈ [0, 1]; o ``Objective`` (l
 - [AJUSTE pós-piloto] Consulta com o modelo de conversa (chat template) do modelo e resposta
   pré-preenchida com "[" (LLM_CHAT_TEMPLATE, LLM_RESPONSE_PREFIX): no piloto, o LLaMA devolvia
   sequências vazias e o Falcon texto livre em 86–94% das consultas com o prompt em texto puro.
+- [AJUSTE pós-verify] Prefixo da resposta por modelo ("Output: [" para LLaMA e Falcon), leitura
+  tolerante de números com zero à esquerda ("050" → 0.50) e registro das respostas que repetem
+  os escores de um exemplo do prompt (cópias; o escore não é alterado).
 - DummyLLM / PromptAwareLLM: LLMs falsos para testes de integração (sem torch).
 """
 import ast
@@ -29,8 +32,8 @@ import os
 import re
 import time
 
-from constants import (LLM_CHAT_TEMPLATE, LLM_MAX_NEW_TOKENS, LLM_MODELS, LLM_QUERY_FORMAT,
-                       LLM_RESPONSE_PREFIX, PROMPT_IDS)
+from constants import (FEWSHOT_SCORES, LLM_CHAT_TEMPLATE, LLM_MAX_NEW_TOKENS, LLM_MODELS,
+                       LLM_QUERY_FORMAT, LLM_RESPONSE_PREFIX, PROMPT_IDS)
 
 # ---------------------------------------------------------------- prompt (idêntico ao código original)
 PROMPT_TEMPLATE = """### ROLE
@@ -128,15 +131,23 @@ def context_for(prompt_id, scenario, gt=None, target=None):
 
 # ---------------------------------------------------------------- resposta
 _LIST_RE = re.compile(r"\[.*?\]", flags=re.DOTALL)
+# "050" (zero à esquerda, inválido em Python) → "0.50"; não altera 0, 0.5 nem 10
+_LEADING_ZERO_RE = re.compile(r"(?<![\w.])0(\d+)(?![\w.])")
 
 
-def parse_llm_response(text):
-    """Primeira lista Python válida com ≥3 elementos numéricos iniciais no texto GERADO →
-    (média dos três primeiros recortados em [0, 1], True). Falha → (0.5, False), o fallback
-    do código original."""
+def response_prefix_for(name, prefixes=LLM_RESPONSE_PREFIX):
+    """Prefixo da resposta para o modelo ``name`` (dicionário com chave "default" ou texto único)."""
+    if isinstance(prefixes, str):
+        return prefixes
+    return prefixes.get(name, prefixes.get("default", ""))
+
+
+def parse_llm_scores(text):
+    """Os três primeiros escores (recortados em [0, 1]) da primeira lista Python válida no texto
+    gerado, ou None."""
     for m in _LIST_RE.findall(text or ""):
         try:
-            parsed = ast.literal_eval(m)
+            parsed = ast.literal_eval(_LEADING_ZERO_RE.sub(r"0.\1", m))
             if not isinstance(parsed, (list, tuple)) or len(parsed) < 3:
                 continue
             head = parsed[:3]
@@ -145,10 +156,23 @@ def parse_llm_response(text):
             vals = [max(0.0, min(1.0, float(v))) for v in head]
             if any(v != v for v in vals):  # NaN
                 continue
-            return sum(vals) / 3.0, True
+            return vals
         except Exception:
             continue
-    return 0.5, False
+    return None
+
+
+def parse_llm_response(text):
+    """Primeira lista Python válida com ≥3 elementos numéricos iniciais no texto GERADO →
+    (média dos três primeiros recortados em [0, 1], True). Falha → (0.5, False), o fallback
+    do código original."""
+    vals = parse_llm_scores(text)
+    return (sum(vals) / 3.0, True) if vals is not None else (0.5, False)
+
+
+def is_example_copy(vals, examples=FEWSHOT_SCORES, tol=1e-6):
+    """True se os três escores repetem os de um exemplo do prompt."""
+    return vals is not None and any(all(abs(a - b) < tol for a, b in zip(vals, ex)) for ex in examples)
 
 
 # ---------------------------------------------------------------- cache persistente
@@ -167,7 +191,8 @@ class ScoreCache:
                 for line in f:
                     try:
                         r = json.loads(line)
-                        self.mem[r["key"]] = (float(r["score"]), bool(r.get("ok", True)))
+                        self.mem[r["key"]] = (float(r["score"]), bool(r.get("ok", True)),
+                                              bool(r.get("copy", False)))
                     except Exception:  # linha corrompida (escrita interrompida)
                         pass
 
@@ -176,18 +201,18 @@ class ScoreCache:
         return f"{self.query_format}|{model_name}|{h}|{expr}"
 
     def get(self, k):
-        """(score, interpretada) ou None."""
+        """(score, interpretada, cópia de exemplo) ou None."""
         return self.mem.get(k)
 
-    def put(self, k, score, ok=True, raw=""):
-        self.mem[k] = (float(score), bool(ok))
+    def put(self, k, score, ok=True, raw="", copy=False):
+        self.mem[k] = (float(score), bool(ok), bool(copy))
         if self.path:
             d = os.path.dirname(self.path)
             if d:
                 os.makedirs(d, exist_ok=True)
             with open(self.path, "a", encoding="utf-8") as f:
                 f.write(json.dumps({"key": k, "score": float(score), "ok": bool(ok),
-                                    "raw": (raw or "")[:300]}) + "\n")
+                                    "copy": bool(copy), "raw": (raw or "")[:300]}) + "\n")
 
     def __len__(self):
         return len(self.mem)
@@ -208,6 +233,8 @@ class BaseLLM:
         self.n_cached = 0    # respostas servidas pelo cache
         self.n_fail = 0      # respostas novas sem lista válida (score 0.5)
         self.n_cached_fail = 0  # respostas do cache que também não tinham lista válida
+        self.n_copy = 0         # respostas novas que repetem os escores de um exemplo do prompt
+        self.n_cached_copy = 0  # idem, servidas pelo cache
         self.seconds = 0.0   # tempo de geração
 
     def _generate_batch(self, prompts):
@@ -229,18 +256,23 @@ class BaseLLM:
                 out[k] = v[0]
                 self.n_cached += 1
                 self.n_cached_fail += int(not v[1])
+                self.n_cached_copy += int(v[2])
         if todo:
             keys = list(todo)
             t0 = time.time()
             raws = self._generate_batch([build_prompt(todo[k], context) for k in keys])
             self.seconds += time.time() - t0
             for k, raw in zip(keys, raws):
-                s, ok = parse_llm_response(self.response_prefix + (raw or ""))
-                if not ok and self.response_prefix:  # o modelo repetiu o "[" pré-preenchido
-                    s, ok = parse_llm_response(raw)
+                vals = parse_llm_scores(self.response_prefix + (raw or ""))
+                if vals is None and self.response_prefix:  # o modelo repetiu o "[" pré-preenchido
+                    vals = parse_llm_scores(raw)
+                ok = vals is not None
+                s = sum(vals) / 3.0 if ok else 0.5
+                copy = is_example_copy(vals)
                 self.n_calls += 1
                 self.n_fail += int(not ok)
-                self.cache.put(k, s, ok, raw)
+                self.n_copy += int(copy)
+                self.cache.put(k, s, ok, raw, copy)
                 out[k] = s
         return [out[self.cache.key(self.name, context, key)] for key, _ in items]
 
@@ -257,7 +289,7 @@ class HFLLM(BaseLLM):
 
     def __init__(self, model_id, name=None, cache=None, batch_size=16,
                  max_new_tokens=LLM_MAX_NEW_TOKENS, chat_template=LLM_CHAT_TEMPLATE,
-                 response_prefix=LLM_RESPONSE_PREFIX, quantize=True, cache_dir=None,
+                 response_prefix=None, quantize=True, cache_dir=None,
                  trust_remote_code=False):
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
@@ -270,7 +302,8 @@ class HFLLM(BaseLLM):
         self.tok = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir,
                                                  trust_remote_code=trust_remote_code)
         self.chat_template = chat_template  # o original não usa template de chat
-        self.response_prefix = response_prefix or ""
+        # None = prefixo padrão do modelo (constants.LLM_RESPONSE_PREFIX)
+        self.response_prefix = response_prefix_for(self.name) if response_prefix is None else response_prefix
         self.tok.padding_side = "left"
         if self.tok.pad_token_id is None:
             self.tok.pad_token = self.tok.eos_token
