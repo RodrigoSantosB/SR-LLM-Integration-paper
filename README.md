@@ -10,7 +10,7 @@ Este branch reimplementa o pipeline conforme o **texto do artigo**:
 - gerador de dados da seção *In silico*;
 - linha de base sem LLM, n = 25 repetições, ruído (Tabelas 3 e 4) e a distância entre árvores descrita no texto.
 
-O código original está preservado em `src/legacy/`. A correspondência item a item entre artigo e código está em [`docs/CONFORMIDADE.md`](docs/CONFORMIDADE.md).
+O código original está preservado em `src/legacy/`. A correspondência item a item entre artigo e código está em [`docs/CONFORMIDADE.md`](docs/CONFORMIDADE.md). O registro de todas as alterações em relação ao código original, commit a commit, está em [`docs/ALTERACOES.md`](docs/ALTERACOES.md).
 
 ## Instalação
 ```bash

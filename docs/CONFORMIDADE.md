@@ -102,6 +102,8 @@ Colab A100, grid completo (3 cenários × 3 SR × {linha de base, Mistral, LLaMA
 
 ## 8. Ajustes pós-piloto
 
+Descrição detalhada, com arquivos, funções e formato dos resultados: [`ALTERACOES.md`](ALTERACOES.md).
+
 Correções que valem para os dois perfis (defeitos):
 
 | # | Ajuste | Implementação |
