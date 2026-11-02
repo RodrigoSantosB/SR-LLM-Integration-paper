@@ -41,7 +41,7 @@ build==1.2.2.post1
 cachecontrol==0.14.3
 cachetools==5.5.2
 catalogue==2.0.10
-certifi==2025.4.26
+certifi==2026.10.18
 cffi==1.17.1
 chardet==5.2.0
 charset-normalizer==3.4.1
