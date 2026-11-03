@@ -114,7 +114,7 @@ fastdownload==0.0.7
 fastjsonschema==2.21.1
 fastprogress==1.0.3
 fastrlock==0.8.3
-filelock==3.18.0
+filelock==4.2.1
 firebase-admin==6.8.0
 flask==3.1.0
 flatbuffers==25.2.10
