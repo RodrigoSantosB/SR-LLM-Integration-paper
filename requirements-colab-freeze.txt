@@ -556,7 +556,7 @@ tokenizers==0.21.1
 toml==0.10.2
 tomli==2.0.1
 toolz==0.12.1
-torch==2.6.0+cu124
+torch==2.13.0
 torchaudio==2.6.0+cu124
 torchsummary==1.5.1
 torchvision==0.21.0+cu124
