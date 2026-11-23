@@ -6,7 +6,7 @@ matplotlib>=3.7
 deap==1.4.*
 gplearn==0.4.2
 pysr>=1.0,<3                # testado com 2.7.0 (instala o Julia no primeiro uso)
-transformers>=4.43,<5       # generate(stop_strings=..., tokenizer=...)
+transformers>=5.10.1,<6       # generate(stop_strings=..., tokenizer=...)
 accelerate>=0.30
 bitsandbytes>=0.43          # quantização NF4 em 4 bits (requer CUDA)
 pytest>=8
