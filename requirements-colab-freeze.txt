@@ -261,7 +261,7 @@ keyring==25.6.0
 keyrings.google-artifactregistry-auth==1.1.2
 kiwisolver==1.4.8
 langchain==0.3.24
-langchain-core==0.3.56
+langchain-core==1.3.3
 langchain-text-splitters==0.3.8
 langcodes==3.5.0
 langsmith==0.3.39
