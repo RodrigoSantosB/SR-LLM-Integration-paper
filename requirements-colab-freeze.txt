@@ -86,7 +86,7 @@ debugpy==1.8.0
 decorator==4.4.2
 defusedxml==0.7.1
 Deprecated==1.2.18
-diffusers==0.33.1
+diffusers==0.38.0
 distributed==2024.12.1
 distributed-ucxx-cu12==0.42.0
 distro==1.9.0
