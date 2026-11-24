@@ -249,7 +249,7 @@ jupyter-console==6.1.0
 jupyter-core==5.7.2
 jupyter-kernel-gateway==2.5.2
 jupyter-leaflet==0.19.2
-jupyter-server==1.16.0
+jupyter-server==2.20.0
 jupyterlab-pygments==0.3.0
 jupyterlab-widgets==3.0.14
 kaggle==1.7.4.2
